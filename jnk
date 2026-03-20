@@ -1,0 +1,52 @@
+import re
+import sys
+
+def extract_sv_gv(file_path):
+    with open(file_path, "r", errors="ignore") as f:
+        data = f.read()
+
+    # Normalize whitespace
+    data = re.sub(r'\s+', ' ', data)
+
+    # Split into possible statements
+    parts = re.split(r'[;\n]', data)
+
+    cleaned = []
+
+    for part in parts:
+        part = part.strip()
+
+        # Keep only sv(...) or gv(...)
+        if re.search(r'\b(sv|Set-Variable)\s*\(', part) or \
+           re.search(r'\b(gv|Get-Variable)\s*\(', part):
+
+            # Remove obvious junk patterns
+            if any(j in part for j in [
+                "Console.WriteLine",
+                "int x",
+                "bool f",
+                "Guid",
+                "List<",
+                "Task.Delay",
+                "Environment",
+                "unchecked",
+                "Exception",
+                "new-object dynamic",
+                "todo:",
+                "{", "}"
+            ]):
+                continue
+
+            cleaned.append(part)
+
+    # Pretty print
+    print("\n===== CLEANED sv/gv ONLY =====\n")
+    for line in cleaned:
+        print(line.strip())
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python clean_ps.py <file>")
+        sys.exit(1)
+
+    extract_sv_gv(sys.argv[1])
