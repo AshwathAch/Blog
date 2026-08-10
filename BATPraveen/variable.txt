@@ -1,0 +1,84 @@
+import re
+import sys
+
+
+def load_variables(filename):
+    variables = {}
+
+    with open(filename, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+
+            if not line:
+                continue
+
+            # Match:
+            # set var1="a"
+            # set "var1=a"
+            match = re.match(
+                r'^\s*set\s+"?([^=\s"]+)"?\s*=\s*"?(.*?)"?\s*$',
+                line,
+                re.IGNORECASE
+            )
+
+            if match:
+                name = match.group(1)
+                value = match.group(2)
+
+                variables[name] = value
+
+    return variables
+
+
+def expand_command(command, variables):
+    # Match %varname%
+    pattern = re.compile(r'%([^%]+)%')
+
+    def replace(match):
+        var_name = match.group(1)
+
+        if var_name in variables:
+            return variables[var_name]
+
+        # Leave unknown variables unchanged
+        return match.group(0)
+
+    # Repeat expansion in case variables contain other variables
+    previous = None
+
+    while command != previous:
+        previous = command
+        command = pattern.sub(replace, command)
+
+    return command
+
+
+def main():
+    if len(sys.argv) != 4:
+        print(
+            "Usage:\n"
+            "  python expand_cmd.py variables.txt command.txt output.txt"
+        )
+        sys.exit(1)
+
+    variable_file = sys.argv[1]
+    command_file = sys.argv[2]
+    output_file = sys.argv[3]
+
+    variables = load_variables(variable_file)
+
+    with open(command_file, "r", encoding="utf-8") as f:
+        command = f.read()
+
+    result = expand_command(command, variables)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(result)
+
+    print("[+] Variables loaded :", len(variables))
+    print("[+] Expanded output  :", result)
+    print("[+] Output saved to  :", output_file)
+
+
+if __name__ == "__main__":
+    main()
