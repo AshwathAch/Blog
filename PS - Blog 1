@@ -1,0 +1,143 @@
+# From Registry-Stored PowerShell to In-Memory Cryptocurrency Mining: A Multi-Stage Infection Chain
+
+## Introduction
+
+We received an escalation from a client regarding a PowerShell command that had been executed remotely. The command retrieved additional content from the Windows Registry and dynamically executed it using `ScriptBlock::Create`. This behavior prompted us to investigate the sample and reconstruct the complete execution chain.
+
+Our analysis revealed a multi-stage **cryptocurrency-mining infection** that relied heavily on obfuscation, Registry-based payload storage, covert data delivery, persistence mechanisms, security-control tampering, and in-memory execution. Rather than deploying the final payload directly to disk, the threat actor progressively concealed and reconstructed payloads from Registry data, DNS TXT records, image files, and WAV files.
+
+## Phase 1: Registry-Based PowerShell Execution and PNG Payload Delivery
+
+During the initial investigation, we observed an encoded PowerShell script stored in the Registry under:
+
+`HKLM:\Software\uf42a9660377\vstdfehzr`
+
+The Registry was therefore being used as a storage location for the PowerShell payload, allowing the script to be retrieved dynamically instead of relying entirely on a conventional `.ps1` file.
+
+The script periodically queried DNS TXT records associated with `sslvalidcert.com` (currently observed as `txtcdn.net`) to retrieve encoded data. The TXT-based domain was subject to change over time, suggesting that the infrastructure could be rotated by the threat actor.
+
+The returned TXT data was converted into bytes and used to construct a URL from which a PNG image was downloaded. The image was then treated as a covert data container. The script extracted information from the red channel of pixels in the image to reconstruct the embedded payload.
+
+Further analysis confirmed that the downloaded PNG was not being used as a conventional image. Instead, it served as an additional layer of payload obfuscation. The embedded data was extracted and reconstructed before being executed on the compromised system.
+
+Once executed, the payload established communication with its command-and-control infrastructure. After the C2 channel was established, the server delivered additional PowerShell scripts, moving the infection into the next stages.
+
+## Phase 2: WAV Files as Payload Containers
+
+The PowerShell script received from the C2 server first removed existing files from the `Public\Music` directory. It then downloaded a ZIP archive and extracted its contents into the same location.
+
+The archive contained three files using the `.wav` extension, making them appear to be legitimate audio files:
+
+* `Atsg.wav`
+* `Tmav.wav`
+* `Realtek HD Audio.wav`
+
+However, the files were not used as conventional audio content. Two of the extracted WAV files were subsequently read and processed by the PowerShell scripts for payload extraction.
+
+### ATSG.wav: Security Evasion and Persistence
+
+The `Atsg.wav` stage contained another encoded PowerShell payload. During analysis, we observed that the script modified the PowerShell execution policy to `Bypass` and tampered with several security and telemetry mechanisms.
+
+The script modified PowerShell configuration, disabled or weakened selected security-related features, added broad Microsoft Defender exclusions, and removed PowerShell history to reduce visibility into the activity.
+
+The PowerShell payload also encrypted additional PowerShell code using Windows DPAPI and stored the encrypted data in the Registry with restrictive permissions. This allowed the payload to retrieve and decrypt the code locally while limiting access to the stored data.
+
+Multiple persistence mechanisms were then established. Hidden Scheduled Tasks were created to execute the encrypted payload at logon and at regular intervals. In addition, a WMI permanent event subscription was configured to monitor a Registry-related event and trigger the payload when the specified Registry condition changed.
+
+This combination of Registry-based payload storage, Scheduled Tasks, WMI event-based persistence, and security-control tampering provided the threat actor with several mechanisms for maintaining execution on the compromised system.
+
+### Binary-to-ASCII Encoded PowerShell
+
+Another layer of the payload was represented as a decimal/binary-to-ASCII encoded PowerShell script. After decoding, the script revealed functionality responsible for extracting a .NET assembly from a WAV file.
+
+### WAV-Based .NET Assembly Extraction
+
+When reversing the decoded PowerShell payload, we found that it read `Realtek HD Audio.wav` and extracted an embedded payload from the audio data.
+
+The script skipped the standard 44-byte WAV header and reconstructed the embedded data by combining the lower four bits, or nibbles, of consecutive bytes. The resulting data represented a .NET assembly.
+
+Instead of writing the reconstructed assembly to disk, the script loaded it directly into the PowerShell process using:
+
+`[Reflection.Assembly]::Load()`
+
+This allowed the .NET assembly to execute directly from memory.
+
+### .NET DLL: PowerShell Execution and Defense Evasion
+
+After extracting the .NET DLL, we analyzed its functionality and found that it further modified the PowerShell environment.
+
+The DLL modified the PowerShell profile and configured the execution policy to `Bypass`. It also created a separate PowerShell execution context and used it to disable or weaken selected security and telemetry features, add broad Microsoft Defender exclusions, disable selected Defender-related services and scheduled tasks, and remove PowerShell history files.
+
+These capabilities indicate that the DLL primarily served as a **defense-evasion component**, reducing security visibility and removing artifacts associated with PowerShell execution before the infection progressed further.
+
+## DNS-Based C2 Communication
+
+The payload also implemented a persistent command-and-control mechanism using PowerShell.
+
+At startup, it created a mutex to prevent multiple instances from running simultaneously and generated a unique 20-character host identifier. This identifier was stored in the Registry and subsequently used to identify the compromised system.
+
+For C2 discovery, the payload used DNS-over-HTTPS to query TXT records associated with `httptls.org` through Google DNS. The response contained information used to determine the C2 server address.
+
+After discovering the C2 server, the payload communicated using HTTP/HTTPS POST requests and identified the compromised host through an `X-HWID` header.
+
+The payload periodically transmitted `Info` and `pingo` messages to maintain communication with the server. When the server returned a `ps1` command, the payload extracted the PowerShell code and executed it asynchronously using a PowerShell execution context.
+
+The execution result was subsequently reported to the C2 server using `OK` or `ERR` responses.
+
+The communication mechanism also incorporated randomized delays and exponential backoff when communication failed. This allowed the payload to repeatedly attempt reconnection while reducing the frequency of network requests.
+
+## TMAV.wav: In-Memory .NET Execution
+
+The `Tmav.wav` stage contained another PowerShell payload encoded as decimal values. After decoding, the script created a `mav.wav` file under the `Public\Music` directory and retrieved it from a remote server.
+
+Further analysis revealed that the WAV file again acted as a carrier for a hidden .NET executable.
+
+Similar to the previous extraction stage, the script skipped the 44-byte WAV header and reconstructed the embedded data by combining the lower nibbles of consecutive bytes.
+
+The resulting .NET executable was then loaded directly into memory using:
+
+`[Reflection.Assembly]::Load()`
+
+Its entry point was subsequently invoked, allowing the final payload to execute without requiring the reconstructed executable to be written to disk.
+
+## Phase 3: .NET Executable – Cryptocurrency Mining
+
+Analysis of the reconstructed .NET executable revealed that it was the final payload and functioned as a cryptocurrency miner associated with the XMRig mining ecosystem.
+
+While debugging the executable, we observed an embedded command-line configuration similar to:
+
+`-a rx/0 -o xmr-asiannanopoolorg:10343 --keepalive -u <Alphanumeric value> -p x --tls --cpu-max-threads-hint=40`
+
+The configuration indicated the use of the `rx/0` RandomX algorithm, a remote mining pool, a wallet/worker identifier, persistent pool communication, TLS, and a CPU-thread configuration hint.
+
+The executable also contacted a remote `config.txt` resource, which returned additional mining parameters:
+
+`algo=rx/0`
+`PoolAddress=eu.hashvault.pro:443`
+`WalletAddress=<value>`
+`DefaultCpuUsage=40`
+`HighCpuUsage=80`
+`KeepAlive=true`
+`Tls=true`
+
+These parameters provided the miner with its algorithm, pool, wallet, communication settings, and custom CPU-utilization controls.
+
+During analysis, we also observed that the .NET executable dropped `WinRing0.sys`, a signed kernel-mode driver used by XMRig on Windows to provide access to CPU Model-Specific Registers (MSRs) for RandomX optimization. Its presence is therefore consistent with the miner's low-level CPU optimization requirements.
+
+The `--cpu-max-threads-hint=40` setting should not be interpreted as a strict 40% CPU-usage limit. In XMRig, this value is a hint used by the automatic CPU configuration to determine the maximum number of mining threads; the actual CPU utilization can vary depending on the processor and other configuration parameters.
+
+The remotely retrieved configuration also gave the operator flexibility to modify mining parameters and infrastructure without replacing the entire executable.
+
+## Conclusion
+
+This investigation uncovered a highly layered infection chain in which each stage concealed the next payload using a different technique.
+
+The initial PowerShell script was stored in the Registry and dynamically executed. DNS TXT records were then used to retrieve information that led to a PNG-based payload container. Subsequent stages used ZIP archives and WAV files to disguise additional PowerShell scripts and .NET assemblies. The assemblies were reconstructed and loaded directly into memory, reducing the need to write executable payloads to disk.
+
+At the same time, the malware established persistence through Scheduled Tasks and WMI permanent event subscriptions, while modifying PowerShell and Microsoft Defender settings to reduce detection and telemetry.
+
+The final stage deployed a cryptocurrency miner based on the XMRig ecosystem, with both embedded and remotely retrieved configurations controlling its mining behavior.
+
+An important aspect of the infection is that the C2 communication established during the earlier stages remained available independently of the final mining activity. This means that even after identifying the cryptocurrency miner, the compromised host could potentially remain under the threat actor's control through the existing C2 channel. The channel could subsequently be used to deliver additional payloads, execute further commands, or conduct other malicious activity.
+
+Overall, the infection demonstrates how multiple relatively simple techniques—Registry payload storage, DNS-based discovery, image and audio steganography, in-memory .NET loading, persistence, and defense evasion—can be chained together to create a considerably more difficult-to-analyze infection.
